@@ -3,176 +3,223 @@ import pandas as pd
 import customtkinter as ctk
 from tkinter import ttk, filedialog, messagebox
 from PIL import Image, ImageTk
+import threading
+import shutil
 import ctypes
+import unicodedata
 
-# Deixa o visual do programa no modo claro
+# Aqui ele vai tentar importar o main.py
+try:
+    from main import extrair_total_brasul
+except ImportError:
+    pass
+
 ctk.set_appearance_mode("light")
+
 
 class DashboardBrasul(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        # Truque pro Windows não confundir o programa com o ícone do Python
-        try:
-            myappid = 'brasul.tecnologia.gestaoinsumos.v12'
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
-        except:
-            pass
+        # --- 1. CONFIGURAÇÕES E ÍCONES ---
 
-        # Configura o título da janela e o tamanho da tela
-        self.title("BRASUL - GESTÃO DE INSUMOS v3.0")
+        self.title("GESTÃO DE INSUMOS BRASUL v1.0")
         self.geometry("1580x850")
         self.configure(fg_color="#F5F5F5")
 
-        # Acha onde as pastas e arquivos estão
-        diretorio = os.path.dirname(os.path.abspath(__file__))
-        self.caminho_db = os.path.join(os.path.dirname(diretorio), "DATA", "output", "Banco_Mestre_Brasul.xlsx")
+        diretorio_src = os.path.dirname(os.path.abspath(__file__))
+        self.pasta_input = os.path.join(os.path.dirname(diretorio_src), "DATA", "input")
+        self.caminho_db = os.path.join(os.path.dirname(diretorio_src), "DATA", "output", "Banco_Mestre_Brasul.xlsx")
 
-        # Coloca o ícone da Brasul no topo da janela
-        caminho_icone = os.path.join(diretorio, "ICONE_BRASUL.png")
+        # ICONES BRASUL (Janela e Barra de Tarefas)
+
+        caminho_icone = os.path.join(diretorio_src, "iconebrasul2.ico")
         if os.path.exists(caminho_icone):
             try:
-                self.iconbitmap(caminho_icone)
+                # Ícone na Barra de Tarefas
+                myappid = 'brasul.gestao.v12'
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+
+                # Ícone no Topo da Janela
                 img_icon = Image.open(caminho_icone)
                 self.icon_photo = ImageTk.PhotoImage(img_icon)
-                self.wm_iconphoto(False, self.icon_photo)
-            except Exception as e:
-                print(f"Erro no ícone: {e}")
+                self.after(200, lambda: self.wm_iconphoto(False, self.icon_photo))
+            except:
+                pass
 
-        # Arruma o grid pra dividir a tela em duas partes
+        self.df_completo = pd.DataFrame()
+        self.carregar_banco_inicial()
+
+        # --- 2. LAYOUT PRINCIPAL ---
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        # Barra lateral branca (Sidebar)
-        self.sidebar = ctk.CTkFrame(self, width=280, fg_color="#FFFFFF", corner_radius=0)
+        # --- 3. BARRA LATERAL (SIDEBAR) ---
+        self.sidebar = ctk.CTkFrame(self, width=300, fg_color="#FFFFFF", corner_radius=0)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
         self.sidebar.grid_propagate(False)
 
-        # Coloca o logo da Brasul na barra lateral
-        caminho_logo = os.path.join(diretorio, "LOGOTIPOBRASUL.png")
+        # LOGOTIPO GRANDE
+        caminho_logo = os.path.join(diretorio_src, "LOGOTIPOBRASUL.png")
         if os.path.exists(caminho_logo):
-            logo_raw = Image.open(caminho_logo)
-            self.logo_img = ctk.CTkImage(logo_raw, size=(220, 90))
-            ctk.CTkLabel(self.sidebar, image=self.logo_img, text="").pack(pady=40)
+            img_raw = Image.open(caminho_logo)
+            self.logo_img = ctk.CTkImage(img_raw, size=(240, 90))
+            ctk.CTkLabel(self.sidebar, image=self.logo_img, text="").pack(pady=(50, 60))
 
-        # Botão verde pra salvar os dados no Excel
-        self.btn_export = ctk.CTkButton(self.sidebar, text="📊 EXPORTAR EXCEL",
-                                        fg_color="#27ae60", hover_color="#1e8449",
-                                        height=45, font=ctk.CTkFont(weight="bold"),
-                                        command=self.exportar_excel)
-        self.btn_export.pack(pady=10, padx=20, fill="x")
+        font_btns = ctk.CTkFont(family="Arial", size=13, weight="bold")
 
-        # Área da direita onde os dados aparecem
+        # BOTÕES LATERAIS COLORIDOS
+        self.btn_import = ctk.CTkButton(self.sidebar, text="📄 IMPORTAR PDF",
+                                        fg_color="#FFCC00", text_color="black", height=50,
+                                        font=font_btns, command=self.importar_arquivo_thread)
+        self.btn_import.pack(pady=10, padx=25, fill="x")
+
+        self.btn_export = ctk.CTkButton(self.sidebar, text="📊 EXPORTAR BUSCA",
+                                        fg_color="#2ecc71", text_color="black", height=50,
+                                        font=font_btns, command=self.exportar_excel)
+        self.btn_export.pack(pady=10, padx=25, fill="x")
+
+        self.progresso = ctk.CTkProgressBar(self.sidebar, mode="indeterminate", progress_color="#FFCC00")
+        self.lbl_status = ctk.CTkLabel(self.sidebar, text="Processando...", font=("Arial", 11, "italic"),
+                                       text_color="gray")
+
+        # --- 4. ÁREA DE BUSCA COM BORDA ---
         self.main_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.main_frame.grid(row=0, column=1, padx=20, pady=20, sticky="nsew")
+        self.main_frame.grid(row=0, column=1, padx=25, pady=25, sticky="nsew")
 
-        # Caixinha branca onde fica a barra de busca
-        self.search_container = ctk.CTkFrame(self.main_frame, fg_color="#FFFFFF", corner_radius=12)
+        self.search_container = ctk.CTkFrame(self.main_frame, fg_color="#FFFFFF", corner_radius=15, border_width=1,
+                                             border_color="#CCCCCC")
         self.search_container.pack(fill="x", pady=(0, 20))
 
-        # Onde o usuário digita o que quer procurar
         self.entry_busca = ctk.CTkEntry(self.search_container,
-                                        placeholder_text="O que você procura? (Ex: Madeira, Aço, %, M2...)",
-                                        height=55, border_width=0, fg_color="transparent",
-                                        font=ctk.CTkFont(size=15))
+                                        placeholder_text="Busque por material ou código (Ex: AÇO, 02.03.001)...",
+                                        height=60, border_width=1, fg_color="transparent", font=ctk.CTkFont(size=16))
         self.entry_busca.pack(side="left", padx=20, fill="x", expand=True)
-        self.entry_busca.bind("<Return>", lambda e: self.pesquisar())
+        self.entry_busca.bind("<Return>", lambda e: self.pesquisar("ACUMULADO"))
 
-        # Botão laranja pra clicar e buscar
-        self.btn_search = ctk.CTkButton(self.search_container, text="BUSCAR",
-                                        fg_color="#d95947", hover_color="#b04132",
-                                        width=140, height=45, font=ctk.CTkFont(weight="bold"),
-                                        command=self.pesquisar)
-        self.btn_search.pack(side="right", padx=15)
+        # BOTÕES DE BUSCA ESPECÍFICA
+        self.btn_orc = ctk.CTkButton(self.search_container, text="PLANILHA QUANTITATIVA",
+                                     fg_color="#e67e22", text_color="black", width=220, height=50,
+                                     font=font_btns, command=lambda: self.pesquisar("QUANTITATIVA"))
+        self.btn_orc.pack(side="right", padx=5)
 
-        # Estilo visual da tabela de dados
+        self.btn_med = ctk.CTkButton(self.search_container, text="ACUMULO DE MEDIÇÃO",
+                                     fg_color="#3498db", text_color="black", width=220, height=50,
+                                     font=font_btns, command=lambda: self.pesquisar("ACUMULADO"))
+        self.btn_med.pack(side="right", padx=15)
+
+        # --- 5. TABELA COM CABEÇALHO EM NEGRITO E BORDAS ---
         style = ttk.Style()
-        style.theme_use("default")
-        style.configure("Treeview", background="#FFFFFF", fieldbackground="#FFFFFF",
-                        rowheight=35, font=('Segoe UI', 10))
-        style.configure("Treeview.Heading", font=('Segoe UI', 10, 'bold'), background="#EEEEEE")
-        style.map("Treeview", background=[('selected', '#d95947')])
+        style.theme_use("default")  # Necessário para customizar bordas do cabeçalho
 
-        # Montagem das 9 colunas que o robô extraiu
-        self.cols = ("Obra", "Cod", "Desc", "UN", "Q_Orc", "Q_Acum", "Q_Per", "V_Acum", "V_Per")
+        style.configure("Treeview", background="#FFFFFF", fieldbackground="#FFFFFF", rowheight=38,
+                        font=('Segoe UI', 10), borderwidth=0)
+
+        # Estilização do Cabeçalho (Negrito + Borda Visual)
+        style.configure("Treeview.Heading",
+                        font=('Segoe UI', 10, 'bold'),
+                        background="#F2F2F2",
+                        foreground="black",
+                        relief="groove",  # Cria a bordinha no cabeçalho
+                        borderwidth=1)
+
+        style.map("Treeview", background=[('selected', '#FFCC00')], foreground=[('selected', 'black')])
+
+        self.cols = ("Obra", "Cod", "Desc", "UN", "Q_Orc", "Q_Acum")
         self.tabela = ttk.Treeview(self.main_frame, columns=self.cols, show='headings')
 
-        # Nomes que ficam no topo de cada coluna
-        headers = ["OBRA/ARQUIVO", "CÓDIGO", "DESCRIÇÃO DO SERVIÇO", "UN", "QTD ORÇ.", "QTD ACUM.", "QTD PER.",
-                   "VALOR ACUM.", "VALOR PER."]
-        larguras = [160, 95, 420, 50, 100, 100, 100, 120, 120]
+        heads = ["ESCOLA / OBRA", "CÓDIGO", "DESCRIÇÃO DO SERVIÇO", "UN", "QT ORÇADA", "QT ACUMULADA"]
+        for c, h in zip(self.cols, heads):
+            self.tabela.heading(c, text=h)
+            self.tabela.column(c, width=120, anchor="center")
+        self.tabela.column("Desc", width=450, anchor="w")
 
-        for col, head, w in zip(self.cols, headers, larguras):
-            self.tabela.heading(col, text=head)
-            self.tabela.column(col, width=w, anchor="center")
-
-        self.tabela.column("Desc", anchor="w")
-
-        # Barra lateral pra descer a tabela se tiver muita coisa
         scrollbar = ttk.Scrollbar(self.main_frame, orient="vertical", command=self.tabela.yview)
         self.tabela.configure(yscrollcommand=scrollbar.set)
-
         self.tabela.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
-        # Botão cinza lá embaixo pra limpar a busca
-        self.btn_reset = ctk.CTkButton(self, text="LIMPAR BUSCA", fg_color="#555555",
-                                       command=self.resetar, width=120)
-        self.btn_reset.place(relx=0.98, rely=0.98, anchor="se")
+        # --- 6. RODAPÉ ---
+        self.lbl_contador = ctk.CTkLabel(self, text="", font=("Arial", 12, "bold"))
+        self.lbl_contador.place(relx=0.21, rely=0.97, anchor="sw")
 
-        self.df_data = pd.DataFrame()
+        self.btn_reset = ctk.CTkButton(self, text="🧹 LIMPAR PESQUISA", fg_color="#D1D1D1",
+                                       text_color="black", width=180, height=40,
+                                       font=font_btns, command=self.limpar)
+        self.btn_reset.place(relx=0.98, rely=0.97, anchor="se")
+
         self.entry_busca.focus()
 
-    # Função que procura as palavras no arquivo Excel
-    def pesquisar(self):
-        termo = self.entry_busca.get().strip().upper()
-        if not termo: return
+    # --- LÓGICA DE BUSCA E FUNCIONAMENTO ---
 
+    def carregar_banco_inicial(self):
         if os.path.exists(self.caminho_db):
             try:
-                # Carrega o Excel e tira os erros de espaço vazio
-                df = pd.read_excel(self.caminho_db).fillna('')
+                self.df_completo = pd.read_excel(self.caminho_db).fillna('')
+            except:
+                pass
 
-                # Varredura inteligente em 3 frentes: Descrição, Código ou Unidade
-                self.df_data = df[df['Descricao'].str.contains(termo, na=False) |
-                                  df['Codigo'].astype(str).str.contains(termo, na=False) |
-                                  df['UN'].str.contains(termo, na=False)]
+    def remover_acentos(self, txt):
+        return "".join(c for c in unicodedata.normalize('NFD', str(txt)) if unicodedata.category(c) != 'Mn')
 
-                # Limpa o que tava na tela antes de mostrar o novo
-                for i in self.tabela.get_children(): self.tabela.delete(i)
+    def pesquisar(self, tipo):
+        termo = self.entry_busca.get().strip().upper()
+        if not termo or self.df_completo.empty: return
 
-                # Joga os resultados na tabela
-                for _, r in self.df_data.iterrows():
-                    self.tabela.insert("", "end", values=list(r))
+        termo_n = self.remover_acentos(termo)
 
-                if self.df_data.empty:
-                    messagebox.showinfo("Busca", f"Não achei nada para: {termo}")
-            except Exception as e:
-                messagebox.showerror("Erro", f"Zicou ao ler o Excel: {e}")
-        else:
-            messagebox.showwarning("Aviso", "O Banco de Dados sumiu. Rode o main primeiro!")
+        def match(row):
+            desc_n = self.remover_acentos(str(row['Desc']).upper())
+            cod_n = str(row['Cod']).upper()
+            tipo_row = str(row['Tipo']).upper()
+            return (termo_n in desc_n or termo_n in cod_n) and (tipo in tipo_row)
 
-    # Função pra salvar o resultado da tela em um novo arquivo
-    def exportar_excel(self):
-        if self.df_data.empty:
-            messagebox.showwarning("Exportar", "Não tem nada na tela pra exportar.")
-            return
+        res = self.df_completo[self.df_completo.apply(match, axis=1)]
+        [self.tabela.delete(i) for i in self.tabela.get_children()]
 
-        path = filedialog.asksaveasfilename(defaultextension=".xlsx",
-                                            filetypes=[("Excel files", "*.xlsx")])
-        if path:
-            try:
-                self.df_data.to_excel(path, index=False)
-                messagebox.showinfo("Sucesso", "Planilha salva com sucesso!")
-            except Exception as e:
-                messagebox.showerror("Erro", f"Não consegui salvar: {e}")
+        for _, r in res.head(1000).iterrows():
+            q_ac = r['Q_Acum'] if "ACUMULADO" in str(r['Tipo']).upper() else "---"
+            self.tabela.insert("", "end", values=[r['Obra'], r['Cod'], r['Desc'], r['UN'], r['Q_Orc'], q_ac])
 
-    # Limpa a caixa de busca e a tabela
-    def resetar(self):
+        self.lbl_contador.configure(text=f"📊 Itens encontrados em {tipo}: {len(res)}")
+
+    def limpar(self):
         self.entry_busca.delete(0, 'end')
-        for i in self.tabela.get_children(): self.tabela.delete(i)
-        self.df_data = pd.DataFrame()
+        [self.tabela.delete(i) for i in self.tabela.get_children()]
+        self.lbl_contador.configure(text="")
         self.entry_busca.focus()
+
+    def importar_arquivo_thread(self):
+        c = filedialog.askopenfilename(filetypes=[("PDF", "*.pdf")])
+        if c:
+            shutil.copy(c,
+                        os.path.join(os.path.dirname(os.path.dirname(self.caminho_db)), "input", os.path.basename(c)))
+            self.btn_import.configure(state="disabled", text="🕒 LENDO...")
+            self.progresso.pack(pady=10, padx=25, fill="x");
+            self.progresso.start();
+            self.lbl_status.pack()
+            threading.Thread(target=self.run_ocr, daemon=True).start()
+
+    def run_ocr(self):
+        try:
+            extrair_total_brasul()
+            self.after(0, self.done)
+        except Exception as e:
+            self.after(0, lambda: messagebox.showerror("Erro", str(e)))
+
+    def done(self):
+        self.progresso.stop();
+        self.progresso.pack_forget();
+        self.lbl_status.pack_forget()
+        self.btn_import.configure(state="normal", text="📄 IMPORTAR PDF")
+        self.carregar_banco_inicial()
+        messagebox.showinfo("Sucesso", "Dados Integrados!");
+        self.limpar()
+
+    def exportar_excel(self):
+        p = filedialog.asksaveasfilename(defaultextension=".xlsx")
+        if p and hasattr(self, 'df_data'): self.df_completo.to_excel(p, index=False)
+
 
 if __name__ == "__main__":
     app = DashboardBrasul()

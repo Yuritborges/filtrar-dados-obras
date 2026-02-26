@@ -1,160 +1,118 @@
 import os
 import pandas as pd
-import customtkinter as ctk
-from tkinter import ttk, filedialog, messagebox
-from PIL import Image, ImageTk
-import ctypes
+import pdfplumber
+import easyocr
+import numpy as np
+import re
+from PIL import Image, ImageEnhance
+from datetime import datetime
+import time
 
-ctk.set_appearance_mode("light")
+# --- CONFIGURAÇÃO ---
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+pasta_input = os.path.join(BASE_DIR, "DATA", "input")
+pasta_output = os.path.join(BASE_DIR, "DATA", "output")
+caminho_banco = os.path.join(pasta_output, "Banco_Mestre_Brasul.xlsx")
 
-class DashboardBrasul(ctk.CTk):
-    def __init__(self):
-        super().__init__()
+regex_cod = re.compile(r'\d{1,2}[\.\, ]\d{2}[\.\, ]\d{2,3}')
+unidades_lista = ['KG', 'M2', 'M3', 'UN', 'M', '%', 'CJ', 'PA', 'VB', 'M1', 'H', 'MES', 'VB']
 
-        # Faz o Windows mostrar o ícone certo na barra de tarefas
-        myappid = 'brasul.tecnologia.gestaoinsumos.v3'
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
 
-        # Configura o tamanho e o título da janela
-        self.title("BRASUL - GESTÃO DE INSUMOS v3.0")
-        self.geometry("1580x850")
-        self.configure(fg_color="#F5F5F5")
+def limpar_valor(t):
+    res = re.sub(r'[^0-9\,\.]', '', t.replace('O', '0').replace('I', '1').replace('L', '1'))
+    return res if res else "0"
 
-        diretorio = os.path.dirname(os.path.abspath(__file__))
-        self.caminho_db = os.path.join(os.path.dirname(diretorio), "DATA", "output", "Banco_Mestre_Brasul.xlsx")
 
-        # Coloca o ícone personalizado no topo
-        caminho_icone = os.path.join(diretorio, "ICONE_BRASUL.png")
-        if os.path.exists(caminho_icone):
-            img_icon = Image.open(caminho_icone)
-            self.icon_photo = ImageTk.PhotoImage(img_icon)
-            self.wm_iconphoto(False, self.icon_photo)
+def extrair_total_brasul():
+    print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 🚀 INICIANDO EXTRATOR DE DADOS BRASUL CONSTRUTORA v1.0")
+    if not os.path.exists(pasta_output): os.makedirs(pasta_output)
+    reader = easyocr.Reader(['pt'])
+    arquivos = [f for f in os.listdir(pasta_input) if f.endswith('.pdf')]
 
-        # Divide a tela em colunas
-        self.grid_columnconfigure(1, weight=1)
-        self.grid_rowconfigure(0, weight=1)
+    for i, arquivo in enumerate(arquivos):
+        t_arq = time.time()
+        print(f"📄 ({i + 1}/{len(arquivos)}) ANALISANDO: {arquivo}")
+        dados_arquivo = []
+        nome_obra = arquivo.replace('.pdf', '')
 
-        # Cria a barra lateral branca
-        self.sidebar = ctk.CTkFrame(self, width=280, fg_color="#FFFFFF", corner_radius=0)
-        self.sidebar.grid(row=0, column=0, sticky="nsew")
-        self.sidebar.grid_propagate(False)
+        try:
+            with pdfplumber.open(os.path.join(pasta_input, arquivo)) as pdf:
+                # Pega nome da escola na capa
+                texto_capa = pdf.pages[0].extract_text()
+                if texto_capa:
+                    m = re.search(r'ESCOLA\s*[:\-]\s*(.*)', texto_capa, re.IGNORECASE)
+                    if m: nome_obra = m.group(1).split('\n')[0].strip().upper()
 
-        # Coloca o logo da Brasul na lateral
-        caminho_logo = os.path.join(diretorio, "LOGOTIPOBRASUL.png")
-        if os.path.exists(caminho_logo):
-            logo_raw = Image.open(caminho_logo)
-            self.logo_img = ctk.CTkImage(logo_raw, size=(280, 120))
-            ctk.CTkLabel(self.sidebar, image=self.logo_img, text="").pack(pady=40)
+                for n_pag, pagina in enumerate(pdf.pages):
+                    img_raw = pagina.to_image(resolution=500).original
+                    img = ImageEnhance.Contrast(img_raw.convert("L")).enhance(3.5)
+                    resultado = reader.readtext(np.array(img.convert("RGB")))
 
-        # Botão verde pra gerar o Excel
-        self.btn_export = ctk.CTkButton(self.sidebar, text="📊 EXPORTAR EXCEL",
-                                        fg_color="#27ae60", hover_color="#1e8449",
-                                        height=45, font=ctk.CTkFont(weight="bold"),
-                                        command=self.exportar_excel)
-        self.btn_export.pack(pady=10, padx=20, fill="x")
+                    texto_pag = " ".join([it[1].upper() for it in resultado])
+                    tipo_p = "ACUMULADO" if any(
+                        k in texto_pag for k in ["ACUMULADO", "MEDIÇÃO", "ANTERIOR"]) else "QUANTITATIVA"
 
-        # Área onde a mágica acontece (direita)
-        self.main_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.main_frame.grid(row=0, column=1, padx=20, pady=20, sticky="nsew")
+                    # Agrupar por Linha
+                    linhas_y = {}
+                    for (bbox, texto, prob) in resultado:
+                        if prob < 0.05: continue
+                        y = (bbox[0][1] + bbox[2][1]) / 2
+                        achou = False
+                        for k in linhas_y.keys():
+                            if abs(y - k) < 25:
+                                linhas_y[k].append((bbox[0][0], texto))
+                                achou = True;
+                                break
+                        if not achou: linhas_y[y] = [(bbox[0][0], texto)]
 
-        # Caixinha branca da busca
-        self.search_container = ctk.CTkFrame(self.main_frame, fg_color="#FFFFFF", corner_radius=12)
-        self.search_container.pack(fill="x", pady=(0, 20))
+                    for y in sorted(linhas_y.keys()):
+                        itens = sorted(linhas_y[y], key=lambda x: x[0])
 
-        # Campo pra digitar o que quer achar
-        self.entry_busca = ctk.CTkEntry(self.search_container,
-                                        placeholder_text="O que você procura? (Ex: Aço, M2, 02.04...)",
-                                        height=55, border_width=0, fg_color="transparent",
-                                        font=ctk.CTkFont(size=15))
-        self.entry_busca.pack(side="left", padx=20, fill="x", expand=True)
-        self.entry_busca.bind("<Return>", lambda e: self.pesquisar())
+                        cod, un, desc_parts, vals = "", "", [], []
 
-        # Botão laranja de buscar
-        self.btn_search = ctk.CTkButton(self.search_container, text="BUSCAR",
-                                        fg_color="#d95947", hover_color="#b04132",
-                                        width=140, height=45, font=ctk.CTkFont(weight="bold"),
-                                        command=self.pesquisar)
-        self.btn_search.pack(side="right", padx=15)
+                        # PASSO 1: Identificar o Código e a Unidade (Ancoragem)
+                        for j, (x, txt) in enumerate(itens):
+                            t = txt.strip()
+                            if regex_cod.search(t) and not cod:
+                                cod = t.replace(',', '.')
+                            elif t.upper() in unidades_lista:
+                                un = t.upper()
 
-        # Configura o estilo da tabela (fontes e cores)
-        style = ttk.Style()
-        style.theme_use("default")
-        style.configure("Treeview", background="#FFFFFF", fieldbackground="#FFFFFF",
-                        rowheight=35, font=('Segoe UI', 10))
-        style.configure("Treeview.Heading", font=('Segoe UI', 10, 'bold'), background="#EEEEEE")
-        style.map("Treeview", background=[('selected', '#d95947')])
+                        # PASSO 2: Distribuir o resto baseado no que foi achado
+                        for j, (x, txt) in enumerate(itens):
+                            t = txt.strip()
+                            if t.replace(',', '.') == cod or t.upper() == un: continue
 
-        # Define as colunas que vão aparecer na tela
-        self.cols = ("Obra", "Cod", "Desc", "UN", "Q_Orc", "Q_Acum", "Q_Per", "V_Acum", "V_Per")
-        self.tabela = ttk.Treeview(self.main_frame, columns=self.cols, show='headings')
+                            # Se tem número e está depois do meio da linha, é valor
+                            if any(c.isdigit() for c in t) and j > 1:
+                                v = limpar_valor(t)
+                                if v != "0": vals.append(v)
+                            else:
+                                if len(t) > 1: desc_parts.append(t)
 
-        # Nomes que ficam no topo da tabela e larguras
-        headers = ["OBRA/ARQUIVO", "CÓDIGO", "DESCRIÇÃO DO SERVIÇO", "UN", "QTD ORÇ.", "QTD ACUM.", "QTD PER.",
-                   "VALOR ACUM.", "VALOR PER."]
-        larguras = [160, 95, 420, 50, 100, 100, 100, 120, 120]
+                        desc_f = " ".join(desc_parts).upper().strip()
 
-        for col, head, w in zip(self.cols, headers, larguras):
-            self.tabela.heading(col, text=head)
-            self.tabela.column(col, width=w, anchor="center")
+                        # SALVA SE TIVER PELO MENOS DESCRIÇÃO OU CÓDIGO
+                        if cod or len(desc_f) > 3:
+                            dados_arquivo.append({
+                                'Obra': nome_obra, 'Obra_Arq': arquivo, 'Tipo': tipo_p,
+                                'Cod': cod, 'Desc': desc_f, 'UN': un,
+                                'Q_Orc': vals[0] if len(vals) > 0 else "0",
+                                'Q_Acum': vals[1] if (len(vals) > 1 and tipo_p == "ACUMULADO") else "0"
+                            })
 
-        self.tabela.column("Desc", anchor="w")
+            if dados_arquivo:
+                df_n = pd.DataFrame(dados_arquivo)
+                if os.path.exists(caminho_banco):
+                    df_f = pd.concat([pd.read_excel(caminho_banco), df_n], ignore_index=True)
+                else:
+                    df_f = df_n
+                cols = ['Obra', 'Obra_Arq', 'Tipo', 'Cod', 'Desc', 'UN', 'Q_Orc', 'Q_Acum']
+                df_f[cols].to_excel(caminho_banco, index=False)
+                print(f"✅ {arquivo} processado.")
+        except Exception as e:
+            print(f"❌ Erro: {e}")
 
-        # Barrinha de rolagem pra ver tudo
-        scrollbar = ttk.Scrollbar(self.main_frame, orient="vertical", command=self.tabela.yview)
-        self.tabela.configure(yscrollcommand=scrollbar.set)
-
-        self.tabela.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-
-        # Botão cinza pra limpar a tela
-        self.btn_reset = ctk.CTkButton(self, text="LIMPAR BUSCA", fg_color="#555555",
-                                       command=self.resetar, width=120)
-        self.btn_reset.place(relx=0.98, rely=0.98, anchor="se")
-
-        self.df_data = pd.DataFrame()
-        self.entry_busca.focus()
-
-    # Função que faz a varredura no banco de dados
-    def pesquisar(self):
-        termo = self.entry_busca.get().strip().upper()
-        if not termo: return
-
-        if os.path.exists(self.caminho_db):
-            try:
-                # Lê o Excel e tira os erros de vazio
-                df = pd.read_excel(self.caminho_db).fillna('')
-                # Filtra por Nome, Código ou Unidade
-                self.df_data = df[df['Descricao'].str.contains(termo, na=False) |
-                                  df['Codigo'].astype(str).str.contains(termo, na=False) |
-                                  df['UN'].str.contains(termo, na=False)]
-
-                # Limpa a tabela antes de mostrar o novo resultado
-                for i in self.tabela.get_children(): self.tabela.delete(i)
-                for _, r in self.df_data.iterrows():
-                    self.tabela.insert("", "end", values=list(r))
-
-                if self.df_data.empty:
-                    messagebox.showinfo("Busca", f"Não achei nada para: {termo}")
-            except Exception as e:
-                messagebox.showerror("Erro", f"Problema ao ler o Excel: {e}")
-        else:
-            messagebox.showwarning("Aviso", "O arquivo do banco sumiu!")
-
-    # Função pra salvar o que tá na tela em um novo arquivo
-    def exportar_excel(self):
-        if self.df_data.empty: return
-        path = filedialog.asksaveasfilename(defaultextension=".xlsx")
-        if path:
-            self.df_data.to_excel(path, index=False)
-            messagebox.showinfo("Exportar", "Relatório criado com sucesso!")
-
-    # Limpa tudo e volta pro começo
-    def resetar(self):
-        self.entry_busca.delete(0, 'end')
-        for i in self.tabela.get_children(): self.tabela.delete(i)
-        self.df_data = pd.DataFrame()
-        self.entry_busca.focus()
 
 if __name__ == "__main__":
-    app = DashboardBrasul()
-    app.mainloop()
+    extrair_total_brasul()
