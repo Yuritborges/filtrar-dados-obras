@@ -7,26 +7,37 @@ import re
 from PIL import Image, ImageEnhance
 from datetime import datetime
 import time
+import sys # <--- ADICIONADO PARA CONTROLAR O .EXE
 
-# --- CONFIGURAÇÃO ---
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# --- NOVA CONFIGURAÇÃO DE CAMINHOS INTELIGENTE ---
+if getattr(sys, 'frozen', False):
+    # Se estiver rodando como .exe (na máquina do chefe)
+    # A pasta base é onde o arquivo .exe está localizado
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    # Se estiver rodando no PyCharm (sua máquina)
+    # Sobe dois níveis a partir de SRC/main.py para chegar na raiz do projeto
+    BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Caminhos agora são relativos à BASE_DIR identificada acima
 pasta_input = os.path.join(BASE_DIR, "DATA", "input")
 pasta_output = os.path.join(BASE_DIR, "DATA", "output")
 caminho_banco = os.path.join(pasta_output, "Banco_Mestre_Brasul.xlsx")
 
+# --- REGRAS TÉCNICAS (Mantidas) ---
 regex_cod = re.compile(r'\d{1,2}[\.\, ]\d{2}[\.\, ]\d{2,3}')
 unidades_lista = ['KG', 'M2', 'M3', 'UN', 'M', '%', 'CJ', 'PA', 'VB', 'M1', 'H', 'MES', 'VB']
-
 
 def limpar_valor(t):
     res = re.sub(r'[^0-9\,\.]', '', t.replace('O', '0').replace('I', '1').replace('L', '1'))
     return res if res else "0"
 
-
 def extrair_total_brasul():
     tempo_total = time.time()
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 🚀 INICIANDO EXTRATOR DE DADOS BRASUL v1.0")
 
+    # Garante que as pastas existam antes de começar
+    if not os.path.exists(pasta_input): os.makedirs(pasta_input)
     if not os.path.exists(pasta_output): os.makedirs(pasta_output)
 
     # CARREGA A LISTA DE ARQUIVOS QUE JA FORAM ENVIADOS PARA A TRAVA DE SEGURANÇA
@@ -45,7 +56,6 @@ def extrair_total_brasul():
     for i, arquivo in enumerate(arquivos_na_pasta):
         t_arq = time.time()
 
-        # TRAVA DE SEGURANÇA: SE JA ESTIVER NO EXCEL O ARQUIVO SALVO, ESSE COMANDO FAZ ELE PULAR
         if arquivo in arquivos_processados:
             print(f"({i + 1}/{len(arquivos_na_pasta)}) PULANDO: {arquivo} (JÁ EXISTE NO SISTEMA)")
             continue
@@ -67,8 +77,7 @@ def extrair_total_brasul():
                     resultado = reader.readtext(np.array(img.convert("RGB")))
 
                     texto_pag = " ".join([it[1].upper() for it in resultado])
-                    tipo_p = "ACUMULADO" if any(
-                        k in texto_pag for k in ["ACUMULADO", "MEDIÇÃO", "ANTERIOR", "PERIODO"]) else "QUANTITATIVA"
+                    tipo_p = "ACUMULADO" if any(k in texto_pag for k in ["ACUMULADO", "MEDIÇÃO", "ANTERIOR", "PERIODO"]) else "QUANTITATIVA"
 
                     linhas_y = {}
                     for (bbox, texto, prob) in resultado:
@@ -78,8 +87,7 @@ def extrair_total_brasul():
                         for k in linhas_y.keys():
                             if abs(y - k) < 25:
                                 linhas_y[k].append((bbox[0][0], texto))
-                                achou = True
-                                break
+                                achou = True; break
                         if not achou: linhas_y[y] = [(bbox[0][0], texto)]
 
                     for y in sorted(linhas_y.keys()):
@@ -108,7 +116,6 @@ def extrair_total_brasul():
                                 'Q_Acum': vals[1] if (len(vals) > 1 and tipo_p == "ACUMULADO") else "0"
                             })
 
-            # SALVA NO EXCEL APÓS CADA ARQUIVO PROCESSADO (CHAVE DE SEGURANÇA CASO CAIA O SISTEMA OU A MAQUINA DESLIGUE)
             if dados_arquivo:
                 df_n = pd.DataFrame(dados_arquivo)
                 if os.path.exists(caminho_banco):
@@ -123,7 +130,6 @@ def extrair_total_brasul():
             print(f"ERRO AO PROCESSAR {arquivo}: {e}")
 
     print(f"\n🏁 FINALIZADO! TEMPO TOTAL: {(time.time() - tempo_total) / 3600:.2f} HORAS.")
-
 
 if __name__ == "__main__":
     extrair_total_brasul()

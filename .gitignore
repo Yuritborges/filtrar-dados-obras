@@ -4,10 +4,11 @@
 __pycache__/
 
 # Dados sensíveis (PDFs e Excel)
+.venv/
+.idea/
+__pycache__/
 DATA/
 *.xlsx
-*.xls
-
-# Arquivos temporários de imagem do OCR
-SRC/temp_*.png
-SRC/temp_*.jpg
+SRC/dist/
+SRC/build/
+SRC/*.spec
