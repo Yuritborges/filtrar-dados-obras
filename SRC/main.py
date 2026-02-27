@@ -24,20 +24,38 @@ def limpar_valor(t):
 
 
 def extrair_total_brasul():
-    print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 🚀 INICIANDO EXTRATOR DE DADOS BRASUL CONSTRUTORA v1.0")
-    if not os.path.exists(pasta_output): os.makedirs(pasta_output)
-    reader = easyocr.Reader(['pt'])
-    arquivos = [f for f in os.listdir(pasta_input) if f.endswith('.pdf')]
+    tempo_total = time.time()
+    print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 🚀 INICIANDO EXTRATOR DE DADOS BRASUL v1.0")
 
-    for i, arquivo in enumerate(arquivos):
+    if not os.path.exists(pasta_output): os.makedirs(pasta_output)
+
+    # CARREGA A LISTA DE ARQUIVOS QUE JA FORAM ENVIADOS PARA A TRAVA DE SEGURANÇA
+    arquivos_processados = []
+    if os.path.exists(caminho_banco):
+        try:
+            df_existente = pd.read_excel(caminho_banco)
+            arquivos_processados = df_existente['Obra_Arq'].unique().tolist()
+            print(f"BANCO CARREGADO. {len(arquivos_processados)} ARQUIVOS JÁ ESTÃO NO COFRE.")
+        except:
+            print("ERRO AO LER BANCO EXISTENTE, PROCESSANDO COMO NOVO.")
+
+    reader = easyocr.Reader(['pt'])
+    arquivos_na_pasta = [f for f in os.listdir(pasta_input) if f.endswith('.pdf')]
+
+    for i, arquivo in enumerate(arquivos_na_pasta):
         t_arq = time.time()
-        print(f"📄 ({i + 1}/{len(arquivos)}) ANALISANDO: {arquivo}")
+
+        # TRAVA DE SEGURANÇA: SE JA ESTIVER NO EXCEL O ARQUIVO SALVO, ESSE COMANDO FAZ ELE PULAR
+        if arquivo in arquivos_processados:
+            print(f"({i + 1}/{len(arquivos_na_pasta)}) PULANDO: {arquivo} (JÁ EXISTE NO SISTEMA)")
+            continue
+
+        print(f"({i + 1}/{len(arquivos_na_pasta)}) ANALISANDO: {arquivo}")
         dados_arquivo = []
         nome_obra = arquivo.replace('.pdf', '')
 
         try:
             with pdfplumber.open(os.path.join(pasta_input, arquivo)) as pdf:
-                # Pega nome da escola na capa
                 texto_capa = pdf.pages[0].extract_text()
                 if texto_capa:
                     m = re.search(r'ESCOLA\s*[:\-]\s*(.*)', texto_capa, re.IGNORECASE)
@@ -50,9 +68,8 @@ def extrair_total_brasul():
 
                     texto_pag = " ".join([it[1].upper() for it in resultado])
                     tipo_p = "ACUMULADO" if any(
-                        k in texto_pag for k in ["ACUMULADO", "MEDIÇÃO", "ANTERIOR"]) else "QUANTITATIVA"
+                        k in texto_pag for k in ["ACUMULADO", "MEDIÇÃO", "ANTERIOR", "PERIODO"]) else "QUANTITATIVA"
 
-                    # Agrupar por Linha
                     linhas_y = {}
                     for (bbox, texto, prob) in resultado:
                         if prob < 0.05: continue
@@ -61,30 +78,21 @@ def extrair_total_brasul():
                         for k in linhas_y.keys():
                             if abs(y - k) < 25:
                                 linhas_y[k].append((bbox[0][0], texto))
-                                achou = True;
+                                achou = True
                                 break
                         if not achou: linhas_y[y] = [(bbox[0][0], texto)]
 
                     for y in sorted(linhas_y.keys()):
                         itens = sorted(linhas_y[y], key=lambda x: x[0])
-
                         cod, un, desc_parts, vals = "", "", [], []
 
-                        # PASSO 1: Identificar o Código e a Unidade (Ancoragem)
                         for j, (x, txt) in enumerate(itens):
                             t = txt.strip()
                             if regex_cod.search(t) and not cod:
                                 cod = t.replace(',', '.')
                             elif t.upper() in unidades_lista:
                                 un = t.upper()
-
-                        # PASSO 2: Distribuir o resto baseado no que foi achado
-                        for j, (x, txt) in enumerate(itens):
-                            t = txt.strip()
-                            if t.replace(',', '.') == cod or t.upper() == un: continue
-
-                            # Se tem número e está depois do meio da linha, é valor
-                            if any(c.isdigit() for c in t) and j > 1:
+                            elif any(c.isdigit() for c in t) and j > 1:
                                 v = limpar_valor(t)
                                 if v != "0": vals.append(v)
                             else:
@@ -92,7 +100,6 @@ def extrair_total_brasul():
 
                         desc_f = " ".join(desc_parts).upper().strip()
 
-                        # SALVA SE TIVER PELO MENOS DESCRIÇÃO OU CÓDIGO
                         if cod or len(desc_f) > 3:
                             dados_arquivo.append({
                                 'Obra': nome_obra, 'Obra_Arq': arquivo, 'Tipo': tipo_p,
@@ -101,6 +108,7 @@ def extrair_total_brasul():
                                 'Q_Acum': vals[1] if (len(vals) > 1 and tipo_p == "ACUMULADO") else "0"
                             })
 
+            # SALVA NO EXCEL APÓS CADA ARQUIVO PROCESSADO (CHAVE DE SEGURANÇA CASO CAIA O SISTEMA OU A MAQUINA DESLIGUE)
             if dados_arquivo:
                 df_n = pd.DataFrame(dados_arquivo)
                 if os.path.exists(caminho_banco):
@@ -109,9 +117,12 @@ def extrair_total_brasul():
                     df_f = df_n
                 cols = ['Obra', 'Obra_Arq', 'Tipo', 'Cod', 'Desc', 'UN', 'Q_Orc', 'Q_Acum']
                 df_f[cols].to_excel(caminho_banco, index=False)
-                print(f"✅ {arquivo} processado.")
+                print(f"{arquivo} SALVO COM SUCESSO NO COFRE.")
+
         except Exception as e:
-            print(f"❌ Erro: {e}")
+            print(f"ERRO AO PROCESSAR {arquivo}: {e}")
+
+    print(f"\n🏁 FINALIZADO! TEMPO TOTAL: {(time.time() - tempo_total) / 3600:.2f} HORAS.")
 
 
 if __name__ == "__main__":

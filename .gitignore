@@ -1,0 +1,13 @@
+# Pastas de sistema e ambiente virtual
+.venv/
+.idea/
+__pycache__/
+
+# Dados sensíveis (PDFs e Excel)
+DATA/
+*.xlsx
+*.xls
+
+# Arquivos temporários de imagem do OCR
+SRC/temp_*.png
+SRC/temp_*.jpg

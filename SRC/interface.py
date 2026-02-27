@@ -8,7 +8,7 @@ import shutil
 import ctypes
 import unicodedata
 
-# Aqui ele vai tentar importar o main.py
+# COMANDO PARA TENTAR IMPORTAR O MAIN.PY
 try:
     from main import extrair_total_brasul
 except ImportError:
@@ -69,18 +69,18 @@ class DashboardBrasul(ctk.CTk):
         font_btns = ctk.CTkFont(family="Arial", size=13, weight="bold")
 
         # BOTÕES LATERAIS COLORIDOS
-        self.btn_import = ctk.CTkButton(self.sidebar, text="📄 IMPORTAR PDF",
+        self.btn_import = ctk.CTkButton(self.sidebar, text="IMPORTAR PDF",
                                         fg_color="#FFCC00", text_color="black", height=50,
                                         font=font_btns, command=self.importar_arquivo_thread)
         self.btn_import.pack(pady=10, padx=25, fill="x")
 
-        self.btn_export = ctk.CTkButton(self.sidebar, text="📊 EXPORTAR BUSCA",
+        self.btn_export = ctk.CTkButton(self.sidebar, text="EXPORTAR BUSCA",
                                         fg_color="#2ecc71", text_color="black", height=50,
                                         font=font_btns, command=self.exportar_excel)
         self.btn_export.pack(pady=10, padx=25, fill="x")
 
         self.progresso = ctk.CTkProgressBar(self.sidebar, mode="indeterminate", progress_color="#FFCC00")
-        self.lbl_status = ctk.CTkLabel(self.sidebar, text="Processando...", font=("Arial", 11, "italic"),
+        self.lbl_status = ctk.CTkLabel(self.sidebar, text="PROCESSANDO...", font=("Arial", 11, "italic"),
                                        text_color="gray")
 
         # --- 4. ÁREA DE BUSCA COM BORDA ---
@@ -92,12 +92,12 @@ class DashboardBrasul(ctk.CTk):
         self.search_container.pack(fill="x", pady=(0, 20))
 
         self.entry_busca = ctk.CTkEntry(self.search_container,
-                                        placeholder_text="Busque por material ou código (Ex: AÇO, 02.03.001)...",
+                                        placeholder_text="BUSQUE POR MATERIAL OU CÓDIGO (Ex: AÇO, 02.03.001)...",
                                         height=60, border_width=1, fg_color="transparent", font=ctk.CTkFont(size=16))
         self.entry_busca.pack(side="left", padx=20, fill="x", expand=True)
         self.entry_busca.bind("<Return>", lambda e: self.pesquisar("ACUMULADO"))
 
-        # BOTÕES DE BUSCA ESPECÍFICA
+        # BOTÕES DE BUSCA ESPECÍFICA - ACUMULO DE MEDIÇÃO E PLANILHA QUANTITATIVA
         self.btn_orc = ctk.CTkButton(self.search_container, text="PLANILHA QUANTITATIVA",
                                      fg_color="#e67e22", text_color="black", width=220, height=50,
                                      font=font_btns, command=lambda: self.pesquisar("QUANTITATIVA"))
@@ -127,6 +127,8 @@ class DashboardBrasul(ctk.CTk):
 
         self.cols = ("Obra", "Cod", "Desc", "UN", "Q_Orc", "Q_Acum")
         self.tabela = ttk.Treeview(self.main_frame, columns=self.cols, show='headings')
+
+        # CABEÇALHO COM OS DESCRITIVOS DE CADA ITEM...
 
         heads = ["ESCOLA / OBRA", "CÓDIGO", "DESCRIÇÃO DO SERVIÇO", "UN", "QT ORÇADA", "QT ACUMULADA"]
         for c, h in zip(self.cols, heads):
@@ -181,7 +183,7 @@ class DashboardBrasul(ctk.CTk):
             q_ac = r['Q_Acum'] if "ACUMULADO" in str(r['Tipo']).upper() else "---"
             self.tabela.insert("", "end", values=[r['Obra'], r['Cod'], r['Desc'], r['UN'], r['Q_Orc'], q_ac])
 
-        self.lbl_contador.configure(text=f"📊 Itens encontrados em {tipo}: {len(res)}")
+        self.lbl_contador.configure(text=f"ITENS ENCONTRADOS EM {tipo}: {len(res)}")
 
     def limpar(self):
         self.entry_busca.delete(0, 'end')
@@ -194,7 +196,7 @@ class DashboardBrasul(ctk.CTk):
         if c:
             shutil.copy(c,
                         os.path.join(os.path.dirname(os.path.dirname(self.caminho_db)), "input", os.path.basename(c)))
-            self.btn_import.configure(state="disabled", text="🕒 LENDO...")
+            self.btn_import.configure(state="disabled", text="LENDO...")
             self.progresso.pack(pady=10, padx=25, fill="x");
             self.progresso.start();
             self.lbl_status.pack()
@@ -211,14 +213,25 @@ class DashboardBrasul(ctk.CTk):
         self.progresso.stop();
         self.progresso.pack_forget();
         self.lbl_status.pack_forget()
-        self.btn_import.configure(state="normal", text="📄 IMPORTAR PDF")
+        self.btn_import.configure(state="normal", text="IMPORTAR PDF")
         self.carregar_banco_inicial()
-        messagebox.showinfo("Sucesso", "Dados Integrados!");
+        messagebox.showinfo("SUCESSO", "DADOS INTEGRADOS!");
         self.limpar()
 
     def exportar_excel(self):
-        p = filedialog.asksaveasfilename(defaultextension=".xlsx")
-        if p and hasattr(self, 'df_data'): self.df_completo.to_excel(p, index=False)
+        # Verifica se existe dados filtrados na memória (df_data)
+        if hasattr(self, 'df_data') and not self.df_data.empty:
+            p = filedialog.asksaveasfilename(defaultextension=".xlsx",
+                                             title="Salvar Exportação",
+                                             filetypes=[("Excel files", "*.xlsx")])
+            if p:
+                try:
+                    self.df_data.to_excel(p, index=False)
+                    messagebox.showinfo("SUCESSO", "PLANILHA EXPORTADA COM SUCESSO!")
+                except Exception as e:
+                    messagebox.showerror("ERRO", f"FALHA AO SALVAR: {e}")
+        else:
+            messagebox.showwarning("AVISO", "NÃO HÁ RESULTADOS DE BUSCA PARA EXPORTAR.")
 
 
 if __name__ == "__main__":
